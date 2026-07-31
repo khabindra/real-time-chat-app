@@ -1,0 +1,57 @@
+# ==============================================================================
+# DJANGO CONFIGURATIONS (whatsapp-lite/)
+# ==============================================================================
+# Virtual environment folder inside django app
+whatsapp-lite/venv/
+
+# Local SQLite database
+whatsapp-lite/db.sqlite3
+
+# Django user uploaded media files
+whatsapp-lite/media/
+
+# Python compiled cache files anywhere in the workspace
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# Local Django logs
+whatsapp-lite/*.log
+
+# ==============================================================================
+# REACT CONFIGURATIONS (whatsapp-frontend/whatsapp-lite-frontend/)
+# ==============================================================================
+# Frontend dependencies folder
+whatsapp-frontend/whatsapp-lite-frontend/node_modules/
+
+# Production build output folder (Vite default)
+whatsapp-frontend/whatsapp-lite-frontend/dist/
+
+# Local npm/vite logs
+whatsapp-frontend/whatsapp-lite-frontend/*.log
+whatsapp-frontend/whatsapp-lite-frontend/*-debug.log*
+whatsapp-frontend/whatsapp-lite-frontend/*-error.log*
+
+# ==============================================================================
+# SENSITIVE DATA / ENVIRONMENT VARIABLES
+# ==============================================================================
+# Block backend environment file containing database/secret keys
+whatsapp-lite/.env
+
+# Block any accidental frontend environment files
+**/.*env
+**/.*env.local
+**/.*env.production
+
+# Allow tracking example files if you create them later
+!**/.*env.example
+
+# ==============================================================================
+# IDEs, SYSTEM JUNK & OS ARTIFACTS
+# ==============================================================================
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
