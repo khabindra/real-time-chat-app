@@ -155,6 +155,13 @@ function Chat({ user, setUser }) {
               return m;
             });
           }
+          
+          // FIX: If the message is marked as deleted and we don't have it locally 
+          // (e.g., we already deleted it for ourselves), do NOT append it back.
+          if (data.message.is_deleted) {
+            return prev;
+          }
+          
           return [...prev, data.message];
         });
 
@@ -185,12 +192,25 @@ function Chat({ user, setUser }) {
           return m;
         }));
       }
+      else if (data.type === 'chat.status') {
+        setMessages(prev => prev.map(m => {
+          if (m.id === data.message_id) {
+            const bestStatus = STATUS_ORDER[data.status] > STATUS_ORDER[m.status] ? data.status : m.status;
+            return { ...m, status: bestStatus };
+          }
+          return m;
+        }));
+      }
       else if (data.type === 'presence.update') {
         const otherUser = activeRoomDataRef.current?.participants?.find(p => p.user.id !== user.id)?.user;
         if (otherUser && data.user_id === otherUser.id) {
           setOtherUserPresence({ online: data.online, last_seen: data.last_seen });
         }
         fetchOnlineUsers();
+      }
+      else if (data.type === 'room.update') {
+        // Refetch rooms, which also updates activeRoomData and the open modals
+        fetchRooms(); 
       }
       else if (data.type === 'system.kicked') {
         alert('You have been removed from this room.');
@@ -247,6 +267,10 @@ function Chat({ user, setUser }) {
     const token = localStorage.getItem('access_token');
     const ws = new WebSocket(`ws://localhost:8000/ws/notifications/`, ['chat', token]);
     
+    ws.onopen = () => {
+      console.log("Notification socket connected");
+    };
+
     ws.onmessage = (e) => {
       const data = JSON.parse(e.data);
       if (data.type === 'new_room') {
@@ -327,8 +351,41 @@ function Chat({ user, setUser }) {
 
   const handleLogout = () => { localStorage.clear(); setUser(null); };
 
+  const handleClearChat = async () => {
+    if (!window.confirm("Clear this chat? Messages will only be removed for you.")) return;
+    try {
+      await api.post(`/rooms/${activeRoom}/clear_chat/`);
+      setMessages([]); // Instantly clear the screen
+      setShowHeaderMenu(false);
+    } catch (err) { alert("Failed to clear chat"); }
+  };
+
+  const handleDeleteContact = async () => {
+    if (!window.confirm("Delete this contact? The chat will be removed from your list.")) return;
+    try {
+      await api.post(`/rooms/${activeRoom}/delete_contact/`);
+      setShowHeaderMenu(false);
+      setActiveRoom(null);
+      fetchRooms(); // Remove from sidebar
+    } catch (err) { alert("Failed to delete contact"); }
+  };
+
+
   const handleDeleteForEveryone = (msgId) => {
     safeSend({ type: 'chat.delete', message_id: msgId });
+    setActiveMenuMsgId(null);
+  };
+
+  // ADD THIS: Handle Delete for Me via REST API
+  const handleDeleteForMe = async (msgId) => {
+    try {
+      await api.post(`/messages/${msgId}/delete/`);
+      // Instantly remove from local state
+      setMessages(prev => prev.filter(m => m.id !== msgId));
+    } catch (err) { 
+      console.error(err); 
+      alert("Failed to delete message"); 
+    }
     setActiveMenuMsgId(null);
   };
 
@@ -341,6 +398,18 @@ function Chat({ user, setUser }) {
       fetchRooms();
     } catch (err) { alert("Failed to delete room"); }
   };
+
+  // ADD THIS: Allow non-admins to leave the group
+  const handleLeaveRoom = async () => {
+    if (!window.confirm("Leave this group?")) return;
+    try {
+      await api.post(`/rooms/${activeRoom}/leave/`);
+      setShowHeaderMenu(false);
+      setActiveRoom(null);
+      fetchRooms();
+    } catch (err) { alert("Failed to leave group"); }
+  };
+
 
   const create1to1Room = async () => {
     if (!new1to1Phone.trim()) return alert("Phone number is required");
@@ -572,8 +641,24 @@ function Chat({ user, setUser }) {
               
               {showHeaderMenu && (
                 <div style={styles.headerMenu} onClick={(e) => e.stopPropagation()}>
-                  {activeRoomData?.type === 'GRP' && <button style={styles.headerMenuItem} onClick={() => { openAddParticipantsModal(); setShowHeaderMenu(false); }}>Add Participants</button>}
-                  <button style={{ ...styles.headerMenuItem, color: '#f15c6d' }} onClick={handleDeleteRoom}>Delete Room</button>
+                  {activeRoomData?.type === 'GRP' && (
+                    <>
+                      {activeRoomData.participants?.find(p => p.user.id === user.id)?.is_admin ? (
+                        <>
+                          <button style={styles.headerMenuItem} onClick={() => { openAddParticipantsModal(); setShowHeaderMenu(false); }}>Add Participants</button>
+                          <button style={{ ...styles.headerMenuItem, color: '#f15c6d' }} onClick={handleDeleteRoom}>Delete Group</button>
+                        </>
+                      ) : (
+                        <button style={{ ...styles.headerMenuItem, color: '#f15c6d' }} onClick={handleLeaveRoom}>Leave Group</button>
+                      )}
+                    </>
+                  )}
+                  {activeRoomData?.type === 'ONE' && (
+                    <>
+                      <button style={styles.headerMenuItem} onClick={handleClearChat}>Clear Chat</button>
+                      <button style={{ ...styles.headerMenuItem, color: '#f15c6d' }} onClick={handleDeleteContact}>Delete Contact</button>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -600,7 +685,7 @@ function Chat({ user, setUser }) {
                         borderTopLeftRadius: (!isMine && isGrouped) ? '8px' : styles.bubbleIn.borderTopLeftRadius,
                         borderTopRightRadius: (isMine && isGrouped) ? '8px' : styles.bubbleOut.borderTopRightRadius,
                       }}
-                      onClick={(e) => { e.stopPropagation(); if (isMine && !msg.is_deleted) setActiveMenuMsgId(prev => prev === msg.id ? null : msg.id); }}
+                      onClick={(e) => { e.stopPropagation(); if (!msg.is_deleted) setActiveMenuMsgId(prev => prev === msg.id ? null : msg.id); }}
                     >
                       {!isMine && activeRoomData?.type === 'GRP' && !isGrouped && (
                         <span style={{ fontSize: '13px', color: '#06cf9c', fontWeight: 600, marginBottom: '2px' }}>{senderName}</span>
@@ -608,13 +693,16 @@ function Chat({ user, setUser }) {
                       <span>{msg.content}</span>
                       <div style={{ ...styles.messageMeta, color: isMine && msg.status === 'FAILED' ? 'rgba(255,255,255,0.8)' : '#667781' }}>
                         {formatTime(msg.created_at)}
-                        {isMine && activeRoomData?.type === 'ONE' && renderTicks(msg.status)}
+                        {isMine && renderTicks(msg.status)}
                       </div>
                     </div>
 
-                    {activeMenuMsgId === msg.id && isMine && !msg.is_deleted && (
+                    {activeMenuMsgId === msg.id && !msg.is_deleted && (
                       <div style={styles.msgActions} onClick={(e) => e.stopPropagation()}>
-                        <button style={styles.msgActionBtn} onClick={() => handleDeleteForEveryone(msg.id)}>Delete for Everyone</button>
+                        <button style={styles.msgActionBtn} onClick={() => handleDeleteForMe(msg.id)}>Delete for Me</button>
+                        {isMine && (
+                          <button style={{ ...styles.msgActionBtn, color: '#f15c6d' }} onClick={() => handleDeleteForEveryone(msg.id)}>Delete for Everyone</button>
+                        )}
                       </div>
                     )}
                   </div>

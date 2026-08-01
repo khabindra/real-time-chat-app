@@ -95,7 +95,20 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         msg = await self._save_message(text)
         msg_data = await self._serialize_message(msg)
         if temp_id: msg_data["temp_id"] = temp_id
+        # Broadcast the message to the room
         await self.channel_layer.group_send(self.group, {"type": "chat.message", "message": msg_data})
+        # FIX: Notify all participants to refresh their sidebar (in case the room was hidden)
+        participant_ids = await self._get_participant_ids()
+        for pid in participant_ids:
+            if str(pid) != str(self.user.id): # Don't notify the sender
+                await self.channel_layer.group_send(
+                    f"notify_{pid}",
+                    {"type": "new_room", "room_id": str(self.room_id)}
+                )
+
+    @database_sync_to_async
+    def _get_participant_ids(self):
+        return list(Participant.objects.filter(room_id=self.room_id).values_list("user_id", flat=True))
 
     async def _handle_typing(self):
         await self.channel_layer.group_send(self.group, {"type": "chat.typing", "user_id": str(self.user.id), "username": self.user.username, "is_typing": True})
@@ -123,13 +136,19 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
     async def chat_read(self, event): await self.send_json({"type": "chat.read", "reader_id": event["reader_id"], "reader": event["reader"], "last_message_id": event["last_message_id"], "read_at": event["read_at"]})
     async def chat_delivered(self, event): await self.send_json({"type": "chat.delivered", "delivered_ids": event["delivered_ids"]})
     async def presence_update(self, event): await self.send_json({"type": "presence.update", "user_id": event["user_id"], "username": event["username"], "online": event["online"], "last_seen": event.get("last_seen")})
+    async def room_update(self, event):
+        await self.send_json({"type": "room.update"})
     async def system_kicked(self, event):
         if event.get("user_id") == str(self.user.id): await self.send_json({"type": "system.kicked"}); await self.close(code=4403)
 
     @database_sync_to_async
-    def _is_participant(self): return Participant.objects.filter(room_id=self.room_id, user=self.user).exists()
+    def _is_participant(self): 
+        return Participant.objects.filter(room_id=self.room_id, user=self.user).exists()
+
     @database_sync_to_async
-    def _save_message(self, text): return Message.objects.create(room_id=self.room_id, sender=self.user, content=text)
+    def _save_message(self, text): 
+        Participant.objects.filter(room_id=self.room_id).update(is_hidden=False)
+        return Message.objects.create(room_id=self.room_id, sender=self.user, content=text)
     @database_sync_to_async
     def _serialize_message(self, msg):
         return {"id": str(msg.id), "room_id": str(msg.room_id), "sender_id": str(msg.sender_id), "sender": msg.sender.username, "content": msg.content, "status": msg.status, "edited_at": msg.edited_at.isoformat() if msg.edited_at else None, "is_deleted": msg.is_deleted, "created_at": msg.created_at.isoformat()}

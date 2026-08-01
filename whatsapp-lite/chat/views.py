@@ -15,7 +15,7 @@ from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 from django.utils import timezone
 
-from .models import User, Room, Participant, Message
+from .models import User, Room, Participant, Message, DeletedMessage
 from .serializers import (UserSerializer, RoomSerializer, MessageSerializer, CreateRoomSerializer, RegisterSerializer)
 from .services import mark_room_read
 
@@ -81,7 +81,11 @@ class RoomViewSet(viewsets.ModelViewSet):
         return super().get_throttles()
 
     def get_queryset(self):
-        return Room.objects.filter(participants__user=self.request.user).distinct()
+        # FIX: Exclude rooms the user has "deleted" from their sidebar
+        return Room.objects.filter(
+            participants__user=self.request.user, 
+            participants__is_hidden=False
+        ).distinct()
 
     def get_serializer_class(self):
         return CreateRoomSerializer if self.action == "create" else RoomSerializer
@@ -104,8 +108,11 @@ class RoomViewSet(viewsets.ModelViewSet):
             room_hash = Room.compute_one_to_one_hash(request.user.id, unique_ids[0])
             existing = Room.objects.filter(type=Room.RoomType.ONE_TO_ONE, room_hash=room_hash).first()
             if existing:
-                # FIX: If you previously left this chat, re-add you as a participant so it shows in your sidebar
-                Participant.objects.get_or_create(room=existing, user=request.user, defaults={'is_admin': True})
+                # FIX: If you previously deleted this contact, unhide it for you!
+                Participant.objects.update_or_create(
+                    room=existing, user=request.user,
+                    defaults={'is_admin': True, 'is_hidden': False}
+                )
                 return Response(RoomSerializer(existing, context={'request': request}).data, status=200)
 
         try:
@@ -116,7 +123,10 @@ class RoomViewSet(viewsets.ModelViewSet):
         except IntegrityError:
             if not is_group:
                 existing = Room.objects.get(type=Room.RoomType.ONE_TO_ONE, room_hash=room_hash)
-                Participant.objects.get_or_create(room=existing, user=request.user, defaults={'is_admin': True})
+                Participant.objects.update_or_create(
+                    room=existing, user=request.user,
+                    defaults={'is_admin': True, 'is_hidden': False}
+                )
                 return Response(RoomSerializer(existing, context={'request': request}).data, status=200)
             raise
         # FIX: Notify the other participants that a new room was created
@@ -128,14 +138,35 @@ class RoomViewSet(viewsets.ModelViewSet):
             )
 
         return Response(RoomSerializer(room, context={'request': request}).data, status=201)
-    
+
     def destroy(self, request, *args, **kwargs):
         """Delete a room entirely (Admin for Group, either participant for 1-to-1)"""
         room = self.get_object()
         if room.type == Room.RoomType.GROUP:
             if not Participant.objects.filter(room=room, user=request.user, is_admin=True).exists():
                 return Response({"detail": "Only admin can delete group"}, status=403)
+        
+        # FIX: Get all participant IDs before deleting the room
+        participant_ids = list(Participant.objects.filter(room=room).values_list('user_id', flat=True))
+        room_id_str = str(room.id)
+        
+        # 1. Delete the room (this cascades and deletes messages, participants, etc.)
         room.delete()
+        
+        # 2. Notify all participants to instantly remove the chat from their UI
+        channel_layer = get_channel_layer()
+        for pid in participant_ids:
+            # Ping their notification socket to refresh their sidebar
+            async_to_sync(channel_layer.group_send)(
+                f"notify_{pid}",
+                {"type": "new_room", "room_id": room_id_str} 
+            )
+            # Kick them if they are currently sitting inside the chat window
+            async_to_sync(channel_layer.group_send)(
+                f"chat_{room_id_str}",
+                {"type": "system.kicked", "user_id": str(pid)}
+            )
+            
         return Response(status=204)
 
     @action(detail=True, methods=["post"], url_path="leave")
@@ -149,21 +180,101 @@ class RoomViewSet(viewsets.ModelViewSet):
                 if new_admin:
                     new_admin.is_admin = True
                     new_admin.save(update_fields=["is_admin"])
+        
+        # 1. Kick the user who left
         async_to_sync(get_channel_layer().group_send)(f"chat_{pk}", {"type": "system.kicked", "user_id": str(request.user.id)})
+        # 2. Notify everyone else to update their UI
+        async_to_sync(get_channel_layer().group_send)(f"chat_{pk}", {"type": "room.update"})
         return Response(status=204)
 
     @action(detail=True, methods=["post"], url_path="add_participants")
     def add_participants(self, request, pk=None):
         room = self.get_object()
-        if not Participant.objects.filter(room=room, user=request.user, is_admin=True).exists(): return Response({"detail": "Only admins can add participants"}, status=403)
+        if not Participant.objects.filter(room=room, user=request.user, is_admin=True).exists(): 
+            return Response({"detail": "Only admins can add participants"}, status=403)
+            
         phones = request.data.get("phones", [])
         if not phones: return Response({"detail": "phones list is required"}, status=400)
+        
         users = list(User.objects.filter(phone__in=phones))
         if len(users) != len(phones): return Response({"detail": "Some phone numbers are not registered"}, status=400)
+        
         existing_ids = set(Participant.objects.filter(room=room).values_list("user_id", flat=True))
-        new_participants = [Participant(room=room, user=u) for u in users if u.id not in existing_ids and u.id != request.user.id]
-        if new_participants: Participant.objects.bulk_create(new_participants)
+        new_participants = []
+        new_user_ids = []
+        
+        for u in users:
+            if u.id not in existing_ids and u.id != request.user.id:
+                new_participants.append(Participant(room=room, user=u))
+                new_user_ids.append(u.id) # Track new IDs for notifications
+                
+        if new_participants: 
+            Participant.objects.bulk_create(new_participants)
+            
+            # FIX: Send real-time notification to newly added users
+            channel_layer = get_channel_layer()
+            for uid in new_user_ids:
+                async_to_sync(channel_layer.group_send)(
+                    f"notify_{uid}",
+                    {"type": "new_room", "room_id": str(room.id)}
+                )
+                
+        # Notify existing participants (including admin) to update their group info UI
+        async_to_sync(get_channel_layer().group_send)(f"chat_{pk}", {"type": "room.update"})
+        
         return Response({"status": "Participants added successfully"}, status=200)
+
+    @action(detail=True, methods=["post"], url_path="remove_participant")
+    def remove_participant(self, request, pk=None):
+        room = self.get_object()
+        if not self._is_room_admin(room, request.user):
+            return Response({"detail": "Only admins can remove participants"}, status=403)
+            
+        target_id = request.data.get("user_id")
+        if not target_id: return Response({"detail": "user_id is required"}, status=400)
+        if str(target_id) == str(request.user.id): return Response({"detail": "Cannot remove yourself, use /leave/"}, status=400)
+
+        target = get_object_or_404(Participant, room=room, user_id=target_id)
+        target.delete()
+        
+        # Notify the removed user
+        async_to_sync(get_channel_layer().group_send)(f"notify_{target_id}", {"type": "new_room", "room_id": str(room.id)})
+        # Kick them if they are currently connected
+        async_to_sync(get_channel_layer().group_send)(f"chat_{pk}", {"type": "system.kicked", "user_id": str(target_id)})
+        # FIX: Notify everyone else to update their participant list
+        async_to_sync(get_channel_layer().group_send)(f"chat_{pk}", {"type": "room.update"})
+        
+        return Response({"status": "Participant removed"}, status=200)
+
+    @action(detail=True, methods=["post"], url_path="clear_chat")
+    def clear_chat(self, request, pk=None):
+        room = self.get_object()
+        if not Participant.objects.filter(room=room, user=request.user).exists():
+            return Response({"detail": "Not a participant."}, status=403)
+        
+        # Hide all existing messages for this user
+        messages = Message.objects.filter(room=room)
+        for msg in messages:
+            DeletedMessage.objects.get_or_create(user=request.user, message=msg)
+            
+        return Response({"status": "Chat cleared"}, status=200)
+
+    @action(detail=True, methods=["post"], url_path="delete_contact")
+    def delete_contact(self, request, pk=None):
+        room = self.get_object()
+        if room.type != Room.RoomType.ONE_TO_ONE:
+            return Response({"detail": "Only for 1-to-1 chats"}, status=400)
+            
+        participant = get_object_or_404(Participant, room=room, user=request.user)
+        participant.is_hidden = True
+        participant.save(update_fields=["is_hidden"])
+        
+        # FIX: Also hide all existing messages so they don't reappear if the contact is re-added later
+        messages = Message.objects.filter(room=room)
+        for msg in messages:
+            DeletedMessage.objects.get_or_create(user=request.user, message=msg)
+        
+        return Response({"status": "Contact deleted"}, status=200)
 
     def _is_room_admin(self, room, user):
         return Participant.objects.filter(room=room, user=user, is_admin=True).exists()
@@ -186,15 +297,32 @@ class MessageCursorPagination(CursorPagination):
 class MessageHistoryView(APIView):
     permission_classes = (IsAuthenticated,)
     pagination_class = MessageCursorPagination
+
     def get(self, request, room_id):
         room = get_object_or_404(Room, id=room_id)
-        if not Participant.objects.filter(room=room, user=request.user).exists(): return Response({"detail": "Not a participant."}, status=403)
-        qs = Message.objects.filter(room=room).select_related("sender").prefetch_related("receipts")
+        
+        # Get the participant record
+        participant = get_object_or_404(Participant, room=room, user=request.user)
+        
+        # FIX: Only fetch messages that were sent AFTER the user joined the room
+        # This ensures someone who left and rejoined doesn't see old messages.
+        qs = Message.objects.filter(
+            room=room, 
+            created_at__gte=participant.joined_at
+        ).exclude(
+            hidden_by__user=request.user
+        ).select_related("sender").prefetch_related("receipts")
+
+        # Message Search (optional, keep if you have it)
+        search_query = request.query_params.get("search")
+        if search_query:
+            qs = qs.filter(content__icontains=search_query)
+
         paginator = self.pagination_class()
         page = paginator.paginate_queryset(qs, request, view=self)
         ser = MessageSerializer(page, many=True)
         return paginator.get_paginated_response(ser.data)
-
+    
 class MarkReadView(APIView):
     permission_classes = (IsAuthenticated,)
     def post(self, request, room_id):
@@ -227,3 +355,16 @@ class ProfileView(APIView):
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=400)
+
+
+class DeleteMessageView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def post(self, request, message_id):
+        msg = get_object_or_404(Message, id=message_id)
+        # Ensure the user is part of the room
+        if not Participant.objects.filter(room=msg.room, user=request.user).exists():
+            return Response({"detail": "Not authorized."}, status=403)
+        # Create the hide record
+        DeletedMessage.objects.get_or_create(user=request.user, message=msg)
+        return Response(status=204)

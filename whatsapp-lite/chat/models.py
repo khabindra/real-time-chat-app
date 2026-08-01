@@ -42,6 +42,7 @@ class Participant(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="rooms")
     joined_at  = models.DateTimeField(auto_now_add=True)
     is_admin   = models.BooleanField(default=False)
+    is_hidden  = models.BooleanField(default=False)
 
     class Meta:
         unique_together = ("room", "user")
@@ -71,3 +72,13 @@ class ReadReceipt(models.Model):
 
     class Meta:
         unique_together = ("message", "user")
+
+
+class DeletedMessage(models.Model):
+    """Tracks messages hidden by specific users ('Delete for Me')."""
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="hidden_messages")
+    message = models.ForeignKey(Message, on_delete=models.CASCADE, related_name="hidden_by")
+    deleted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("user", "message")

@@ -1,6 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import (LoginView, RegisterView, OnlineUsersView, UserListView, RoomViewSet, MessageHistoryView, MarkReadView,ProfileView)
+from .views import (LoginView, RegisterView, OnlineUsersView, UserListView, RoomViewSet, MessageHistoryView, MarkReadView,ProfileView,DeleteMessageView)
 
 router = DefaultRouter()
 router.register("rooms", RoomViewSet, basename="room")
@@ -15,5 +15,7 @@ urlpatterns = [
 
     path("users/me/", ProfileView.as_view(), name="my-profile"),
     path("users/<uuid:user_id>/", ProfileView.as_view(), name="user-profile"),
+
+    path("messages/<uuid:message_id>/delete/", DeleteMessageView.as_view(), name="delete-message"),
     path("", include(router.urls)),
 ]

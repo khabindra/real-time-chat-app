@@ -12,6 +12,8 @@ ALLOWED_HOSTS = ["*"," http://localhost:5173/"]
 INSTALLED_APPS = [
     "daphne",                                  # ASGI server, must be first
     "channels",
+    # Jazzmin must be here BEFORE django.contrib.admin
+    "jazzmin", 
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -188,3 +190,37 @@ DATABASES = {
     }
 }
 '''
+
+
+# --- ADD JAZZMIN UI SETTINGS AT THE BOTTOM ---
+JAZZMIN_SETTINGS = {
+    # title of the window
+    "site_title": "WhatsApp Lite Admin",
+    
+    # title on the login screen (19 chars max)
+    "site_header": "WhatsApp Lite",
+    
+    # title on the top left (27 chars max)
+    "site_brand": "WhatsApp Admin",
+    
+    # relative path to a favicon for your site
+    "site_icon": "https://cdn-icons-png.flaticon.com/512/124/124023.png",
+    
+    # Welcome text on the login screen
+    "welcome_sign": "Welcome to the Admin Panel",
+    
+    # Copyright on the footer
+    "copyright": "WhatsApp Lite Inc.",
+    
+    # The model admin to search from the search bar
+    "search_model": ["auth.User", "chat.Room", "chat.Message"],
+    
+    # Custom UI colors
+    "custom_ui": {
+        "primary": "#008069", # WhatsApp Teal
+        "link": "#008069",
+    },
+    
+    # Whether to show the UI customizer on the sidebar
+    "show_ui_builder": True,
+}
