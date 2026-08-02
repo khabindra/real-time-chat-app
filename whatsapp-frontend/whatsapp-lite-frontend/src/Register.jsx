@@ -16,12 +16,17 @@ function Register({ setUser, switchToLogin }) {
     if (password.length < 8) { setError("Password must be at least 8 characters long."); return; }
 
     try {
+      // FIX 1: Actually register the user first!
+      await api.post('/auth/register/', { username, phone, password, password2: confirmPassword });
+      
+      // FIX 2: Then automatically log them in
       const res = await api.post('/auth/login/', { phone, password });
+      
       localStorage.setItem('access_token', res.data.access);
       localStorage.setItem('refresh_token', res.data.refresh);
       localStorage.setItem('user_id', res.data.user.id);
       localStorage.setItem('username', res.data.user.username);
-      localStorage.setItem('avatar', res.data.user.avatar || ''); // <-- ADD THIS
+      localStorage.setItem('avatar', res.data.user.avatar || '');
       setUser({ id: res.data.user.id, username: res.data.user.username, avatar: res.data.user.avatar });
     } catch (err) {
       const errMsg = err.response?.data;
