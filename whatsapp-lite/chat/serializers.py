@@ -1,27 +1,53 @@
 from rest_framework import serializers
 from django.contrib.auth.password_validation import validate_password
-from .models import User, Room, Participant, Message, ReadReceipt
+from .models import User, Room, Participant, Message, ReadReceipt, Block
+
 
 class UserSerializer(serializers.ModelSerializer):
+    avatar = serializers.SerializerMethodField()
+    about = serializers.SerializerMethodField()
+    last_seen = serializers.SerializerMethodField()
+
     class Meta:
         model = User
         fields = ("id", "username", "phone", "avatar", "about", "last_seen")
-        # Phone and username shouldn't be editable via the profile PATCH endpoint
         read_only_fields = ("id", "username", "phone", "last_seen")
+
+    def _is_blocked(self, obj, request):
+        if not request or not request.user.is_authenticated: return False
+        return Block.objects.filter(blocker=obj, blocked=request.user).exists()
+
+    def get_avatar(self, obj):
+        request = self.context.get('request')
+        if self._is_blocked(obj, request): return None
+        if obj.avatar:
+            if request: return request.build_absolute_uri(obj.avatar.url)
+            return obj.avatar.url
+        return None
+
+    def get_about(self, obj):
+        request = self.context.get('request')
+        if self._is_blocked(obj, request): return None
+        return obj.about
+
+    def get_last_seen(self, obj):
+        request = self.context.get('request')
+        if self._is_blocked(obj, request): return None
+        return obj.last_seen.isoformat() if obj.last_seen else None
 
     # This makes the avatar return a full URL (http://localhost:8000/media/...)
     # while still allowing it to accept file uploads via PATCH
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        if instance.avatar:
-            request = self.context.get('request')
-            if request:
-                data['avatar'] = request.build_absolute_uri(instance.avatar.url)
-            else:
-                data['avatar'] = instance.avatar.url
-        else:
-            data['avatar'] = None
-        return data
+    # def to_representation(self, instance):
+    #     data = super().to_representation(instance)
+    #     if instance.avatar:
+    #         request = self.context.get('request')
+    #         if request:
+    #             data['avatar'] = request.build_absolute_uri(instance.avatar.url)
+    #         else:
+    #             data['avatar'] = instance.avatar.url
+    #     else:
+    #         data['avatar'] = None
+    #     return data
 
 
 class RegisterSerializer(serializers.ModelSerializer):
@@ -86,11 +112,14 @@ class RoomSerializer(serializers.ModelSerializer):
             return {"content": last_msg.content, "created_at": last_msg.created_at.isoformat(), "sender": last_msg.sender.username, "status": last_msg.status}
         return None
 
-    def get_about(self, obj):
-        if obj.type == Room.RoomType.GROUP: return None
-        request_user = self.context.get('request').user
-        other = obj.participants.exclude(user=request_user).first()
-        return other.user.about if other else None
+    def get_about(self, instance):
+        if instance.type == Room.RoomType.GROUP: return None
+        request = self.context.get('request')
+        if not request: return None
+        other = instance.participants.exclude(user=request.user).first()
+        if other:
+            return UserSerializer(other.user, context={'request': request}).data.get('about')
+        return None
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -103,8 +132,8 @@ class RoomSerializer(serializers.ModelSerializer):
                 data['avatar'] = None
         else:
             other = instance.participants.exclude(user=request.user).first()
-            if other and other.user.avatar:
-                data['avatar'] = request.build_absolute_uri(other.user.avatar.url) if request else other.user.avatar.url
+            if other:
+                data['avatar'] = UserSerializer(other.user, context={'request': request}).data.get('avatar')
             else:
                 data['avatar'] = None
                 

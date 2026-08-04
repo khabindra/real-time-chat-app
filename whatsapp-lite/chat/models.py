@@ -82,3 +82,14 @@ class DeletedMessage(models.Model):
 
     class Meta:
         unique_together = ("user", "message")
+
+
+# --- ADD THIS MODEL ---
+class Block(models.Model):
+    """Tracks blocked users."""
+    blocker = models.ForeignKey(User, on_delete=models.CASCADE, related_name="blocking")
+    blocked = models.ForeignKey(User, on_delete=models.CASCADE, related_name="blocked_by")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("blocker", "blocked")

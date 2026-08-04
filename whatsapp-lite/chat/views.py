@@ -15,7 +15,7 @@ from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 from django.utils import timezone
 
-from .models import User, Room, Participant, Message, DeletedMessage
+from .models import User, Room, Participant, Message, DeletedMessage, Block
 from .serializers import (UserSerializer, RoomSerializer, MessageSerializer, CreateRoomSerializer, RegisterSerializer)
 from .services import mark_room_read
 
@@ -313,6 +313,10 @@ class MessageHistoryView(APIView):
             hidden_by__user=request.user
         ).select_related("sender").prefetch_related("receipts")
 
+        # FIX: Exclude messages from users I have blocked
+        blocked_ids = Block.objects.filter(blocker=request.user).values_list("blocked_id", flat=True)
+        qs = qs.exclude(sender_id__in=blocked_ids)
+
         # Message Search (optional, keep if you have it)
         search_query = request.query_params.get("search")
         if search_query:
@@ -368,3 +372,27 @@ class DeleteMessageView(APIView):
         # Create the hide record
         DeletedMessage.objects.get_or_create(user=request.user, message=msg)
         return Response(status=204)
+
+
+# --- ADD THESE NEW VIEWS ---
+class BlockUserView(APIView):
+    permission_classes = (IsAuthenticated,)
+    def post(self, request, user_id):
+        blocked_user = get_object_or_404(User, id=user_id)
+        if blocked_user == request.user: return Response({"detail": "Cannot block yourself"}, status=400)
+        Block.objects.get_or_create(blocker=request.user, blocked=blocked_user)
+        return Response({"status": "User blocked"}, status=200)
+
+class UnblockUserView(APIView):
+    permission_classes = (IsAuthenticated,)
+    def post(self, request, user_id):
+        blocked_user = get_object_or_404(User, id=user_id)
+        Block.objects.filter(blocker=request.user, blocked=blocked_user).delete()
+        return Response({"status": "User unblocked"}, status=200)
+
+class BlockedUsersView(APIView):
+    permission_classes = (IsAuthenticated,)
+    def get(self, request):
+        blocked_ids = Block.objects.filter(blocker=request.user).values_list("blocked_id", flat=True)
+        users = User.objects.filter(id__in=blocked_ids)
+        return Response(UserSerializer(users, many=True, context={'request': request}).data)

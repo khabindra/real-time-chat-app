@@ -5,7 +5,7 @@ from channels.db import database_sync_to_async
 from django.conf import settings
 from django.utils import timezone as dj_timezone
 
-from .models import Room, Message, Participant, User
+from .models import Room, Message, Participant, User, Block
 from .redis_client import get_async_redis
 from .throttle import allow
 from .services import mark_room_delivered
@@ -48,7 +48,10 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
 
         if action == "chat.message":
             text = content.get("content")
-            if not isinstance(text, str) or not text.strip() or len(text) > 4096: await self.send_json({"type": "error", "detail": "invalid content"}); return
+            if not isinstance(text, str) or not text.strip() or len(text) > 4096: 
+                await self.send_json({"type": "error", "detail": "invalid content"}); 
+                return
+            
             if not await allow(f"msg:{self.user.id}", limit=60, window=60): await self.send_json({"type": "error", "detail": "rate_limited"}); return
             await self._handle_new_message(text.strip(), content.get("temp_id"))
 
@@ -129,17 +132,42 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         if await self._is_participant(): return True
         await self.send_json({"type": "system.kicked", "reason": "removed_from_room"}); await self.close(code=4403); return False
 
-    async def chat_message(self, event): await self.send_json({"type": "chat.message", "message": event["message"]})
+    async def chat_message(self, event):
+        # FIX: Ignore messages from users I have blocked
+        sender_id = event["message"].get("sender_id")
+        if await self._is_blocked_by_me(sender_id): return
+        await self.send_json({"type": "chat.message", "message": event["message"]})
+
     async def chat_typing(self, event):
         if event["user_id"] == str(self.user.id): return
+        # FIX: Ignore typing events from users I have blocked
+        if await self._is_blocked_by_me(event["user_id"]): return
+
         await self.send_json({"type": "chat.typing", "user_id": event["user_id"], "username": event["username"], "is_typing": event["is_typing"]})
+
+    async def presence_update(self, event):
+        # FIX: Ignore presence updates from users I have blocked
+        if await self._is_blocked_by_me(event["user_id"]): return
+
+        await self.send_json({"type": "presence.update", "user_id": event["user_id"], "username": event["username"], "online": event["online"], "last_seen": event.get("last_seen")})
+    # -----------------------------
+
     async def chat_read(self, event): await self.send_json({"type": "chat.read", "reader_id": event["reader_id"], "reader": event["reader"], "last_message_id": event["last_message_id"], "read_at": event["read_at"]})
     async def chat_delivered(self, event): await self.send_json({"type": "chat.delivered", "delivered_ids": event["delivered_ids"]})
-    async def presence_update(self, event): await self.send_json({"type": "presence.update", "user_id": event["user_id"], "username": event["username"], "online": event["online"], "last_seen": event.get("last_seen")})
     async def room_update(self, event):
         await self.send_json({"type": "room.update"})
     async def system_kicked(self, event):
         if event.get("user_id") == str(self.user.id): await self.send_json({"type": "system.kicked"}); await self.close(code=4403)
+
+    # --- ADD THIS HELPER METHOD ---
+    @database_sync_to_async
+    def _is_blocked_by_me(self, sender_id):
+        try:
+            sender = User.objects.get(id=sender_id)
+        except User.DoesNotExist:
+            return False
+        return Block.objects.filter(blocker=self.user, blocked=sender).exists()
+    # -------------------------------
 
     @database_sync_to_async
     def _is_participant(self): 

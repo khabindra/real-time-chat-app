@@ -72,6 +72,12 @@ function Chat({ user, setUser }) {
   const [showContactInfoModal, setShowContactInfoModal] = useState(false);
   const [profileData, setProfileData] = useState({ about: "", avatar: "" });
   const [contactInfo, setContactInfo] = useState(null);
+
+  // ADD THESE 3 LINES FOR BLOCKING
+  const [blockedUsers, setBlockedUsers] = useState([]);
+  const [showBlockedListModal, setShowBlockedListModal] = useState(false);
+  const [isBlocked, setIsBlocked] = useState(false);
+
   
   const [newGroupName, setNewGroupName] = useState('');
   const [contacts, setContacts] = useState([]);
@@ -450,9 +456,44 @@ function Chat({ user, setUser }) {
   const handleSelectRoom = (room) => {
     setActiveRoom(room.id);
     setActiveRoomData(room);
+    setIsBlocked(false); // <-- ADD THIS LINE to reset block state on room switch
     const otherUser = room.participants?.find(p => p.user.id !== user.id)?.user;
     if (otherUser) setOtherUserPresence({ online: onlineUsers.has(otherUser.id), last_seen: otherUser.last_seen });
   };
+
+  // --- ADD THESE BLOCKING FUNCTIONS ---
+  const handleBlockUser = async () => {
+    if (!contactInfo || contactInfo.type === 'GRP') return;
+    if (!window.confirm(`Block ${contactInfo.username}?`)) return;
+    try {
+      await api.post(`/users/${contactInfo.id}/block/`);
+      setIsBlocked(true);
+      alert("User blocked. They can no longer send you messages.");
+      setShowContactInfoModal(false);
+    } catch (err) { alert("Failed to block user"); }
+  };
+
+  const handleUnblockUser = async (userId) => {
+    try {
+      await api.post(`/users/${userId}/unblock/`);
+      setBlockedUsers(prev => prev.filter(u => u.id !== userId));
+      // If unblocking the user whose chat is currently open, update UI
+      const otherUser = activeRoomData?.participants.find(p => p.user.id !== user.id)?.user;
+      if (otherUser && otherUser.id === userId) {
+        setIsBlocked(false);
+      }
+    } catch (err) { alert("Failed to unblock"); }
+  };
+
+  const openBlockedList = async () => {
+    try {
+      const res = await api.get('/users/blocked/');
+      setBlockedUsers(res.data);
+      setShowBlockedListModal(true);
+    } catch (err) { console.error(err); }
+  };
+
+
 
   // --- Profile Logic ---
   const openProfile = async () => {
@@ -736,6 +777,14 @@ function Chat({ user, setUser }) {
               <input style={styles.modalInput} value={user.username} disabled />
               <label style={{ fontSize: '14px', color: '#667781', display: 'block', marginBottom: '8px' }}>About</label>
               <input style={styles.modalInput} placeholder="Hey there! I am using WhatsApp Lite." value={profileData.about} onChange={e => setProfileData({ ...profileData, about: e.target.value })} />
+
+              {/* ADD THIS BLOCKED LIST BUTTON */}
+              <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: '16px' }}>
+                <button type="button" onClick={openBlockedList} style={{ backgroundColor: 'transparent', color: '#008069', border: 'none', cursor: 'pointer', fontWeight: 500 }}>
+                  View Blocked List
+                </button>
+              </div>
+
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '24px' }}>
                 <button type="button" onClick={() => setShowProfileModal(false)} style={{ ...styles.modalBtn, backgroundColor: '#e9edef', color: '#54656f', marginRight: '10px' }}>Cancel</button>
                 <button type="submit" style={styles.modalBtn}>Save</button>
@@ -766,6 +815,16 @@ function Chat({ user, setUser }) {
               {contactInfo.type !== 'GRP' && <p style={{ color: '#667781', margin: 0 }}>{contactInfo.phone}</p>}
               {contactInfo.type !== 'GRP' && <p style={{ color: '#667781', fontSize: '14px', marginTop: '5px', fontStyle: 'italic' }}>{contactInfo.about}</p>}
             </div>
+
+            {/* ADD THIS BLOCK BUTTON FOR 1-TO-1 CHATS */}
+            {contactInfo.type !== 'GRP' && (
+              <button 
+                onClick={handleBlockUser} 
+                style={{ width: '100%', padding: '12px', backgroundColor: '#fdecee', color: '#f15c6d', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, marginBottom: '16px' }}
+              >
+                Block User
+              </button>
+            )}
 
             {contactInfo.type === 'GRP' && (
               <div style={{ borderTop: '1px solid #eee', paddingTop: '15px' }}>
@@ -847,6 +906,30 @@ function Chat({ user, setUser }) {
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '24px' }}>
               <button onClick={() => setShowAddParticipantsModal(false)} style={{ ...styles.modalBtn, backgroundColor: '#e9edef', color: '#54656f' }}>Done</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Blocked List Modal */}
+      {showBlockedListModal && (
+        <div style={styles.modalOverlay} onClick={() => setShowBlockedListModal(false)}>
+          <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0, color: '#111b21' }}>Blocked Users</h3>
+            {blockedUsers.length === 0 ? (
+              <p style={{ color: '#667781' }}>You haven't blocked anyone.</p>
+            ) : (
+              <div>
+                {blockedUsers.map(u => (
+                  <div key={u.id} style={styles.contactItem}>
+                    <span style={{ fontWeight: 500 }}>{u.username} ({u.phone})</span>
+                    <button onClick={() => handleUnblockUser(u.id)} style={{ ...styles.modalBtn, padding: '6px 12px', fontSize: '12px' }}>Unblock</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '24px' }}>
+              <button onClick={() => setShowBlockedListModal(false)} style={{ ...styles.modalBtn, backgroundColor: '#e9edef', color: '#54656f' }}>Done</button>
             </div>
           </div>
         </div>
