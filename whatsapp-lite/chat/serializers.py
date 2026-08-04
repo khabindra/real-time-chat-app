@@ -4,7 +4,6 @@ from .models import User, Room, Participant, Message, ReadReceipt, Block
 
 
 class UserSerializer(serializers.ModelSerializer):
-    avatar = serializers.SerializerMethodField()
     about = serializers.SerializerMethodField()
     last_seen = serializers.SerializerMethodField()
 
@@ -35,19 +34,22 @@ class UserSerializer(serializers.ModelSerializer):
         if self._is_blocked(obj, request): return None
         return obj.last_seen.isoformat() if obj.last_seen else None
 
-    # This makes the avatar return a full URL (http://localhost:8000/media/...)
-    # while still allowing it to accept file uploads via PATCH
-    # def to_representation(self, instance):
-    #     data = super().to_representation(instance)
-    #     if instance.avatar:
-    #         request = self.context.get('request')
-    #         if request:
-    #             data['avatar'] = request.build_absolute_uri(instance.avatar.url)
-    #         else:
-    #             data['avatar'] = instance.avatar.url
-    #     else:
-    #         data['avatar'] = None
-    #     return data
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        
+        # Apply blocking logic to avatar
+        if self._is_blocked(instance, request):
+            data['avatar'] = None
+        elif instance.avatar:
+            if request:
+                data['avatar'] = request.build_absolute_uri(instance.avatar.url)
+            else:
+                data['avatar'] = instance.avatar.url
+        else:
+            data['avatar'] = None
+            
+        return data
 
 
 class RegisterSerializer(serializers.ModelSerializer):
@@ -91,11 +93,12 @@ class RoomSerializer(serializers.ModelSerializer):
     last_message = serializers.SerializerMethodField()
     about = serializers.SerializerMethodField()
     avatar = serializers.ImageField(required=False, allow_null=True)
+    is_blocked_by_me = serializers.SerializerMethodField()
 
     class Meta:
         model = Room
-        fields = ("id", "name", "type", "participants", "created_at", "display_name", "last_message", "avatar", "about")
-        read_only_fields = ("id", "type", "participants", "created_at", "display_name", "last_message", "about")
+        fields = ("id", "name", "type", "participants", "created_at", "display_name", "last_message", "avatar", "about", "is_blocked_by_me")
+        read_only_fields = ("id", "type", "participants", "created_at", "display_name", "last_message", "about", "is_blocked_by_me")
 
     def get_display_name(self, obj):
         if obj.type == Room.RoomType.GROUP: return obj.name or "Group Chat"
@@ -120,6 +123,14 @@ class RoomSerializer(serializers.ModelSerializer):
         if other:
             return UserSerializer(other.user, context={'request': request}).data.get('about')
         return None
+
+    def get_is_blocked_by_me(self, obj):
+        if obj.type == Room.RoomType.GROUP: return False
+        request_user = self.context.get('request').user
+        other = obj.participants.exclude(user=request_user).first()
+        if other:
+            return Block.objects.filter(blocker=request_user, blocked=other.user).exists()
+        return False
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

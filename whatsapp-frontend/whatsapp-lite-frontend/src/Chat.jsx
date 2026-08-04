@@ -456,7 +456,7 @@ function Chat({ user, setUser }) {
   const handleSelectRoom = (room) => {
     setActiveRoom(room.id);
     setActiveRoomData(room);
-    setIsBlocked(false); // <-- ADD THIS LINE to reset block state on room switch
+    setIsBlocked(room.is_blocked_by_me || false);
     const otherUser = room.participants?.find(p => p.user.id !== user.id)?.user;
     if (otherUser) setOtherUserPresence({ online: onlineUsers.has(otherUser.id), last_seen: otherUser.last_seen });
   };
@@ -470,6 +470,7 @@ function Chat({ user, setUser }) {
       setIsBlocked(true);
       alert("User blocked. They can no longer send you messages.");
       setShowContactInfoModal(false);
+      fetchRooms(); // Refresh sidebar so is_blocked_by_me is accurate
     } catch (err) { alert("Failed to block user"); }
   };
 
@@ -482,6 +483,7 @@ function Chat({ user, setUser }) {
       if (otherUser && otherUser.id === userId) {
         setIsBlocked(false);
       }
+      fetchRooms(); // Refresh sidebar
     } catch (err) { alert("Failed to unblock"); }
   };
 
@@ -751,11 +753,19 @@ function Chat({ user, setUser }) {
               })}
               <div ref={messagesEndRef} />
             </div>
-
-            <form onSubmit={handleSendMessage} style={styles.inputArea}>
-              <input style={styles.inputField} placeholder="Type a message" value={messageText} onChange={handleTyping} />
-              <button type="submit" style={styles.sendButton}><SendIcon /></button>
-            </form>
+            {/* Input Area or Blocked Banner */}
+            {!isBlocked ? (
+              <form onSubmit={handleSendMessage} style={styles.inputArea}>
+                <input style={styles.inputField} placeholder="Type a message" value={messageText} onChange={handleTyping} />
+                <button type="submit" style={styles.sendButton}><SendIcon /></button>
+              </form>
+            ) : (
+              <div style={{ ...styles.inputArea, justifyContent: 'center', backgroundColor: '#f0f2f5' }}>
+                <div style={{ color: '#667781', fontSize: '14px', fontStyle: 'italic' }}>
+                  You blocked this user. Unblock to send messages.
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>

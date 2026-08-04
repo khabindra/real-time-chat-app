@@ -51,6 +51,9 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             if not isinstance(text, str) or not text.strip() or len(text) > 4096: 
                 await self.send_json({"type": "error", "detail": "invalid content"}); 
                 return
+
+            # FIX: Prevent sending messages if either user has blocked the other
+            if await self._is_chat_blocked(): return 
             
             if not await allow(f"msg:{self.user.id}", limit=60, window=60): await self.send_json({"type": "error", "detail": "rate_limited"}); return
             await self._handle_new_message(text.strip(), content.get("temp_id"))
@@ -168,6 +171,29 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             return False
         return Block.objects.filter(blocker=self.user, blocked=sender).exists()
     # -------------------------------
+
+    # ADD THIS HELPER METHOD to check if the 1-to-1 chat is blocked by either party
+    @database_sync_to_async
+    def _is_chat_blocked(self):
+        try:
+            room = Room.objects.get(id=self.room_id)
+        except Room.DoesNotExist:
+            return True
+            
+        # Blocking only applies to 1-to-1 chats
+        if room.type == Room.RoomType.GROUP:
+            return False
+            
+        other_participant = Participant.objects.filter(room_id=self.room_id).exclude(user=self.user).first()
+        if not other_participant: return False
+            
+        other_user = other_participant.user
+        
+        # Check if I blocked them, or they blocked me
+        is_blocked_by_me = Block.objects.filter(blocker=self.user, blocked=other_user).exists()
+        is_blocked_by_them = Block.objects.filter(blocker=other_user, blocked=self.user).exists()
+        
+        return is_blocked_by_me or is_blocked_by_them
 
     @database_sync_to_async
     def _is_participant(self): 
